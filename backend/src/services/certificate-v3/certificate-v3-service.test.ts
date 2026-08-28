@@ -1180,6 +1180,51 @@ beojaxiivUv31AOWONQGT6UNADIYR/+T6YXY5x+YaRh9Frgl
       );
     });
 
+    // A CSR fixes the key, not the hash DigiCert signs with, so an explicit request must survive it.
+    it("keeps an explicitly requested signature algorithm for an X9 order with a CSR", async () => {
+      const profileId = "profile-x9-sig";
+      vi.mocked(mockCertificateProfileDAL.findByIdWithConfigs).mockResolvedValue({
+        id: profileId,
+        projectId: "project-123",
+        enrollmentType: EnrollmentType.API,
+        issuerType: IssuerType.CA,
+        caId: "ca-x9",
+        certificatePolicyId: "policy-123",
+        slug: "x9-sig-profile",
+        apiConfigId: "api-config-x9",
+        defaults: { signatureAlgorithm: "RSA-SHA256" }
+      } as any);
+      vi.mocked(mockCertificateAuthorityDAL.findByIdWithAssociatedCa).mockResolvedValue({
+        id: "ca-x9",
+        projectId: "project-123",
+        status: CaStatus.ACTIVE,
+        externalCa: {
+          id: "external-ca-x9",
+          type: CaType.DIGICERT,
+          configuration: { productNameId: "x9_pki" }
+        }
+      } as any);
+      vi.mocked(mockCertificatePolicyService.validateCertificateRequest).mockResolvedValue({
+        isValid: true,
+        errors: []
+      } as any);
+      vi.mocked(mockApprovalPolicyDAL.findByProjectId).mockResolvedValue([]);
+
+      await service.orderCertificate({
+        profileId,
+        certificateOrder: {
+          ...mockCertificateOrder,
+          csr: SAN_LESS_CSR,
+          signatureAlgorithm: "RSA-SHA512"
+        },
+        ...mockActor
+      });
+
+      expect(mockCertificateIssuanceQueue.queueCertificateIssuance).toHaveBeenCalledWith(
+        expect.objectContaining({ signatureAlgorithm: "RSA-SHA512" })
+      );
+    });
+
     it("uses profile defaults for X9 orders that omit algorithms and usages", async () => {
       const profileId = "profile-x9-defaults";
       vi.mocked(mockCertificateProfileDAL.findByIdWithConfigs).mockResolvedValue({

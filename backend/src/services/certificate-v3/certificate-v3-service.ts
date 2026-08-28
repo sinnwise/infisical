@@ -1739,12 +1739,16 @@ export const certificateV3ServiceFactory = ({
     }
 
     // applyProfileDefaults treats an API route's present-but-undefined key as explicitly cleared, so
-    // the profile default is read directly rather than changing that shared behaviour.
+    // the profile default is read directly rather than changing that shared behaviour. A CSR fixes the
+    // key it was generated for, but not the hash DigiCert signs with, so an explicitly requested
+    // signature algorithm still wins there.
     const queuedKeyAlgorithm = isDigiCertX9Order
       ? (extractedKeyAlgorithm ?? certificateRequest.keyAlgorithm ?? profile.defaults?.keyAlgorithm)
       : certificateRequest.keyAlgorithm;
     const queuedSignatureAlgorithm = isDigiCertX9Order
-      ? (certificateRequest.signatureAlgorithm ?? profile.defaults?.signatureAlgorithm)
+      ? (certificateOrder.signatureAlgorithm ??
+        certificateRequest.signatureAlgorithm ??
+        profile.defaults?.signatureAlgorithm)
       : certificateOrder.signatureAlgorithm;
 
     const validationResult = await certificatePolicyService.validateCertificateRequest(
