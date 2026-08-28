@@ -1,9 +1,12 @@
-import { TCertificateRequests } from "@app/db/schemas";
+import type { TCertificateRequests } from "@app/db/schemas";
 import { logger } from "@app/lib/logger";
 import { TAppConnectionDALFactory } from "@app/services/app-connection/app-connection-dal";
 import { AppConnection } from "@app/services/app-connection/app-connection-enums";
 import { decryptAppConnectionCredentials } from "@app/services/app-connection/app-connection-fns";
-import { getDigiCertApiBaseUrl } from "@app/services/app-connection/digicert/digicert-connection-fns";
+import {
+  getDigiCertApiBaseUrl,
+  isDigiCertX9Product
+} from "@app/services/app-connection/digicert/digicert-connection-fns";
 import { TDigiCertConnection } from "@app/services/app-connection/digicert/digicert-connection-types";
 import { EnrollmentType } from "@app/services/certificate-profile/certificate-profile-types";
 import { TKmsServiceFactory } from "@app/services/kms/kms-service";
@@ -38,6 +41,7 @@ export type TDigiCertCertificateRequestServiceDep = {
 };
 
 export const DIGICERT_VALIDATION_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+export const DIGICERT_X9_VALIDATION_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type TDigiCertOrderMetadata = {
   digicert: {
@@ -129,12 +133,14 @@ export const processDigiCertPendingValidationRequest = async (
   }
   const parsed = parseResult.data as TDigiCertOrderMetadata;
 
+  const isX9Order = isDigiCertX9Product(parsed.digicert.productNameId);
+  const validationTimeoutMs = isX9Order ? DIGICERT_X9_VALIDATION_TIMEOUT_MS : DIGICERT_VALIDATION_TIMEOUT_MS;
   const age = Date.now() - new Date(parsed.digicert.orderPlacedAt).getTime();
-  if (age >= DIGICERT_VALIDATION_TIMEOUT_MS) {
+  if (age >= validationTimeoutMs) {
     await deps.certificateRequestService.updateCertificateRequestStatus({
       certificateRequestId: request.id,
       status: CertificateRequestStatus.FAILED,
-      errorMessage: "Validation timed out after 24h"
+      errorMessage: `Validation timed out after ${isX9Order ? "30 days" : "24 hours"}`
     });
     logger.info(`DigiCert validation timed out [certificateRequestId=${request.id}]`);
     return { status: CertificateRequestStatus.FAILED, orderStatus: "timeout", reason: "timeout" };

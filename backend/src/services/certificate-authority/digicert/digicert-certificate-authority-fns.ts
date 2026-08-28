@@ -5,18 +5,22 @@ import RE2 from "re2";
 import { TableName } from "@app/db/schemas";
 import { crypto } from "@app/lib/crypto/cryptography";
 import { BadRequestError, NotFoundError } from "@app/lib/errors";
+import { isValidIp } from "@app/lib/ip";
 import { ProcessedPermissionRules } from "@app/lib/knex/permission-filter-utils";
 import { logger } from "@app/lib/logger";
 import { OrgServiceActor } from "@app/lib/types";
 import { TAppConnectionDALFactory } from "@app/services/app-connection/app-connection-dal";
 import { AppConnection } from "@app/services/app-connection/app-connection-enums";
 import { TAppConnectionServiceFactory } from "@app/services/app-connection/app-connection-service";
-import { DIGICERT_CS_PRODUCT_NAME_IDS } from "@app/services/app-connection/digicert/digicert-connection-fns";
 import { TCertificateBodyDALFactory } from "@app/services/certificate/certificate-body-dal";
 import { TCertificateDALFactory } from "@app/services/certificate/certificate-dal";
 import { linkRenewedCertificate } from "@app/services/certificate/certificate-fns";
 import { TCertificateSecretDALFactory } from "@app/services/certificate/certificate-secret-dal";
-import { CertKeyAlgorithm, CertStatus, CrlReason, TAltNameType } from "@app/services/certificate/certificate-types";
+import { CertKeyAlgorithm, CertStatus, CrlReason } from "@app/services/certificate/certificate-types";
+import {
+  extractAlgorithmsFromCSR,
+  extractCertificateRequestFromCSR
+} from "@app/services/certificate-common/certificate-csr-utils";
 import {
   DigiCertExternalMetadataSchema,
   TDigiCertExternalMetadata
@@ -51,6 +55,10 @@ import {
   TPlaceOrderResponse,
   TUpdateDigiCertCertificateAuthorityDTO
 } from "./digicert-certificate-authority-types";
+import {
+  assertDigiCertPurposeMatchesProduct,
+  resolveDigiCertX9IssuanceOptions
+} from "./digicert-certificate-authority-validators";
 import { digiCertCodeSigningFns } from "./digicert-code-signing-fns";
 
 export { castDbEntryToDigiCertCertificateAuthority, getDigiCertClientCredentials };
@@ -71,21 +79,6 @@ type TDigiCertCertificateAuthorityFnsDeps = {
     "encryptWithKmsKey" | "generateKmsKey" | "createCipherPairWithDataKey" | "decryptWithKmsKey"
   >;
   projectDAL: Pick<TProjectDALFactory, "findById" | "findOne" | "updateById" | "transaction">;
-};
-
-const assertPurposeMatchesProduct = (purpose: DigiCertCaPurpose | undefined, productNameId: string): void => {
-  const effectivePurpose = purpose ?? DigiCertCaPurpose.Ssl;
-  const isCsProduct = DIGICERT_CS_PRODUCT_NAME_IDS.has(productNameId);
-  if (effectivePurpose === DigiCertCaPurpose.CodeSigning && !isCsProduct) {
-    throw new BadRequestError({
-      message: `Product '${productNameId}' is not a code-signing product. Pick one of: ${[...DIGICERT_CS_PRODUCT_NAME_IDS].join(", ")}`
-    });
-  }
-  if (effectivePurpose === DigiCertCaPurpose.Ssl && isCsProduct) {
-    throw new BadRequestError({
-      message: `Product '${productNameId}' is a code-signing product but this CA is configured for SSL`
-    });
-  }
 };
 
 const TTL_RE2 = new RE2("^(\\d+)([dhm])$");
@@ -144,7 +137,8 @@ export const DigiCertCertificateAuthorityFns = ({
     configuration: TCreateDigiCertCertificateAuthorityDTO["configuration"];
     actor: OrgServiceActor;
   }) => {
-    const { appConnectionId, organizationId, productNameId, purpose, verifiedContact } = configuration;
+    const { appConnectionId, organizationId, productNameId, purpose, certificateDcvScope, verifiedContact } =
+      configuration;
 
     const appConnection = await appConnectionDAL.findById(appConnectionId);
     if (!appConnection) {
@@ -162,9 +156,9 @@ export const DigiCertCertificateAuthorityFns = ({
       actor
     );
 
-    assertPurposeMatchesProduct(purpose, productNameId);
+    const effectivePurpose = assertDigiCertPurposeMatchesProduct(purpose, productNameId, certificateDcvScope);
 
-    if (purpose === DigiCertCaPurpose.CodeSigning) {
+    if (effectivePurpose === DigiCertCaPurpose.CodeSigning) {
       await codeSigningFns.assertCsOrgValidatedOrContactProvided({
         appConnectionId,
         organizationId,
@@ -193,7 +187,8 @@ export const DigiCertCertificateAuthorityFns = ({
             configuration: {
               organizationId,
               productNameId,
-              purpose: purpose ?? DigiCertCaPurpose.Ssl,
+              purpose: effectivePurpose,
+              ...(certificateDcvScope ? { certificateDcvScope } : {}),
               ...(verifiedContact ? { verifiedContact } : {})
             }
           },
@@ -233,8 +228,11 @@ export const DigiCertCertificateAuthorityFns = ({
     actor: OrgServiceActor;
     name?: string;
   }) => {
+    let effectivePurpose: DigiCertCaPurpose | undefined;
+
     if (configuration) {
-      const { appConnectionId, organizationId, productNameId, purpose, verifiedContact } = configuration;
+      const { appConnectionId, organizationId, productNameId, purpose, certificateDcvScope, verifiedContact } =
+        configuration;
       const appConnection = await appConnectionDAL.findById(appConnectionId);
       if (!appConnection) {
         throw new NotFoundError({ message: `DigiCert app connection with ID '${appConnectionId}' not found` });
@@ -256,9 +254,9 @@ export const DigiCertCertificateAuthorityFns = ({
         actor
       );
 
-      assertPurposeMatchesProduct(purpose, productNameId);
+      effectivePurpose = assertDigiCertPurposeMatchesProduct(purpose, productNameId, certificateDcvScope);
 
-      if (purpose === DigiCertCaPurpose.CodeSigning) {
+      if (effectivePurpose === DigiCertCaPurpose.CodeSigning) {
         await codeSigningFns.assertCsOrgValidatedOrContactProvided({
           appConnectionId,
           organizationId,
@@ -270,7 +268,7 @@ export const DigiCertCertificateAuthorityFns = ({
 
     const updatedCa = await certificateAuthorityDAL.transaction(async (tx) => {
       if (configuration) {
-        const { appConnectionId, organizationId, productNameId, purpose, verifiedContact } = configuration;
+        const { appConnectionId, organizationId, productNameId, certificateDcvScope, verifiedContact } = configuration;
         await externalCertificateAuthorityDAL.update(
           {
             caId: id,
@@ -281,7 +279,8 @@ export const DigiCertCertificateAuthorityFns = ({
             configuration: {
               organizationId,
               productNameId,
-              purpose: purpose ?? DigiCertCaPurpose.Ssl,
+              purpose: effectivePurpose!,
+              ...(certificateDcvScope ? { certificateDcvScope } : {}),
               ...(verifiedContact ? { verifiedContact } : {})
             }
           },
@@ -330,6 +329,8 @@ export const DigiCertCertificateAuthorityFns = ({
     keyAlgorithm = CertKeyAlgorithm.RSA_2048,
     csr,
     ttl,
+    keyUsages,
+    extendedKeyUsages,
     renewalOfOrderId
   }: {
     caId: string;
@@ -339,6 +340,8 @@ export const DigiCertCertificateAuthorityFns = ({
     keyAlgorithm?: CertKeyAlgorithm;
     csr?: string;
     ttl: string;
+    keyUsages?: string[];
+    extendedKeyUsages?: string[];
     renewalOfOrderId?: number;
   }): Promise<{
     metadata: TDigiCertCertificateRequestMetadata;
@@ -356,20 +359,41 @@ export const DigiCertCertificateAuthorityFns = ({
       throw new BadRequestError({ message: `DigiCert CA is disabled [caId=${caId}]` });
     }
 
-    const { productNameId } = digicertCa.configuration;
+    const { productNameId, purpose, certificateDcvScope } = digicertCa.configuration;
 
-    const effectiveCommonName = commonName?.trim() || altNames.find((value) => value.trim().length > 0)?.trim() || "";
+    let csrPem = csr?.trim();
+    const x9CsrRequest =
+      purpose === DigiCertCaPurpose.X9Pki && csrPem ? extractCertificateRequestFromCSR(csrPem) : undefined;
+    const effectiveAltNames = x9CsrRequest?.subjectAlternativeNames?.map(({ value }) => value) ?? altNames;
+    const effectiveCommonName =
+      x9CsrRequest?.commonName?.trim() ||
+      commonName?.trim() ||
+      effectiveAltNames.find((value) => value.trim().length > 0)?.trim() ||
+      "";
     if (!effectiveCommonName) {
       throw new BadRequestError({
         message: `DigiCert requires a common name or at least one DNS SAN [caId=${caId}]`
       });
     }
 
-    let csrPem = csr?.trim();
+    const effectiveKeyAlgorithm =
+      purpose === DigiCertCaPurpose.X9Pki && csrPem ? extractAlgorithmsFromCSR(csrPem).keyAlgorithm : keyAlgorithm;
+    let x9OrderOptions: ReturnType<typeof resolveDigiCertX9IssuanceOptions> | undefined;
+    if (purpose === DigiCertCaPurpose.X9Pki) {
+      x9OrderOptions = resolveDigiCertX9IssuanceOptions({
+        commonName: effectiveCommonName,
+        altNames: effectiveAltNames,
+        keyAlgorithm: effectiveKeyAlgorithm,
+        signatureAlgorithm,
+        keyUsages: x9CsrRequest?.keyUsages ?? keyUsages,
+        extendedKeyUsages: x9CsrRequest?.extendedKeyUsages ?? extendedKeyUsages
+      });
+    }
+
     let privateKeyPem = "";
 
     if (!csrPem) {
-      const alg = keyAlgorithmToAlgCfg(keyAlgorithm);
+      const alg = keyAlgorithmToAlgCfg(effectiveKeyAlgorithm);
       const leafKeys = await crypto.nativeCrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
       const skLeafObj = crypto.nativeCrypto.KeyObject.from(leafKeys.privateKey);
       privateKeyPem = skLeafObj.export({ format: "pem", type: "pkcs8" }) as string;
@@ -378,10 +402,10 @@ export const DigiCertCertificateAuthorityFns = ({
         name: createDistinguishedName({ commonName: effectiveCommonName }),
         keys: leafKeys,
         signingAlgorithm: alg,
-        ...(altNames.length > 0 && {
+        ...(effectiveAltNames.length > 0 && {
           extensions: [
             new x509.SubjectAlternativeNameExtension(
-              altNames.map((value) => ({ type: "dns" as TAltNameType, value })),
+              effectiveAltNames.map((value) => ({ type: isValidIp(value) ? "ip" : "dns", value })),
               false
             )
           ]
@@ -397,7 +421,7 @@ export const DigiCertCertificateAuthorityFns = ({
     );
     const client = createDigiCertApiClient(apiKey, baseUrl);
 
-    const extraSans = altNames.filter((value) => value.toLowerCase() !== effectiveCommonName.toLowerCase());
+    const extraSans = effectiveAltNames.filter((value) => value.toLowerCase() !== effectiveCommonName.toLowerCase());
 
     const normalizedSignature = signatureAlgorithm?.toLowerCase() ?? "";
     let signatureHash: "sha256" | "sha384" | "sha512" = "sha256";
@@ -411,11 +435,14 @@ export const DigiCertCertificateAuthorityFns = ({
         common_name: effectiveCommonName,
         ...(extraSans.length > 0 ? { dns_names: extraSans } : {}),
         csr: csrPem,
-        signature_hash: signatureHash
+        signature_hash: x9OrderOptions?.signatureHash ?? signatureHash,
+        ...(x9OrderOptions?.keyUsages ? { key_usages: x9OrderOptions.keyUsages } : {}),
+        ...(x9OrderOptions?.extendedKeyUsages ? { extended_key_usages: x9OrderOptions.extendedKeyUsages } : {})
       },
       organization: { id: digicertCa.configuration.organizationId },
       order_validity: { days: validityDays },
-      dcv_method: "dns-txt-token" as const,
+      dcv_method: x9OrderOptions?.dcvMethod ?? ("dns-txt-token" as const),
+      ...(x9OrderOptions && certificateDcvScope ? { certificate_dcv_scope: certificateDcvScope } : {}),
       skip_approval: true
     };
 

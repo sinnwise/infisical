@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { AcmeDnsProvider, CaStatus, CaType, GoDaddyProductType } from "@app/hooks/api/ca";
-import { DigiCertCaPurpose } from "@app/hooks/api/ca/types";
+import { DigiCertCaPurpose, DigiCertDcvScope } from "@app/hooks/api/ca/types";
 import { slugSchema } from "@app/lib/schemas";
 
 import { REQUIRED_EAB_DIRECTORIES } from "./constants";
@@ -83,6 +83,7 @@ const digicertConfigurationSchema = z
     organizationId: z.coerce.number().int().positive("Organization is required"),
     productNameId: z.string().trim().min(1, "Product is required"),
     purpose: z.nativeEnum(DigiCertCaPurpose).optional(),
+    certificateDcvScope: z.nativeEnum(DigiCertDcvScope).optional(),
     csRequiresContact: z.boolean().optional(),
     verifiedContact: z
       .object({
@@ -95,6 +96,14 @@ const digicertConfigurationSchema = z
       .optional()
   })
   .superRefine((cfg, ctx) => {
+    if (cfg.certificateDcvScope && cfg.purpose !== DigiCertCaPurpose.X9Pki) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["certificateDcvScope"],
+        message: "Domain validation scope is only available for X9 PKI for TLS CAs"
+      });
+    }
+
     if (cfg.purpose !== DigiCertCaPurpose.CodeSigning || !cfg.csRequiresContact) return;
     const c = cfg.verifiedContact;
     const requiredFields: { key: keyof NonNullable<typeof c>; label: string }[] = [

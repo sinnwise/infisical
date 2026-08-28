@@ -22,11 +22,14 @@ export type TPlaceOrderRequest = {
     dns_names?: string[];
     csr: string;
     signature_hash?: string;
+    key_usages?: Array<"digital_signature" | "key_agreement_encipherment">;
+    extended_key_usages?: Array<"server_authentication" | "client_authentication">;
   };
   organization: { id: number };
 
   order_validity: { days: number } | { years: number };
-  dcv_method: "dns-txt-token";
+  dcv_method: "dns-txt-token" | "http-token";
+  certificate_dcv_scope?: "base_domain" | "fqdn";
   skip_approval?: boolean;
   renewal_of_order_id?: number;
 };

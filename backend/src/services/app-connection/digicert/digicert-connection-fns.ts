@@ -104,6 +104,10 @@ const DIGICERT_CS_VALIDATION_TYPE_BY_PRODUCT: Record<string, string> = {
 
 export const DIGICERT_CS_PRODUCT_NAME_IDS = new Set(Object.keys(DIGICERT_CS_VALIDATION_TYPE_BY_PRODUCT));
 
+export const DIGICERT_X9_PRODUCT_NAME_ID = "x9_pki";
+
+export const isDigiCertX9Product = (productNameId: string): boolean => productNameId === DIGICERT_X9_PRODUCT_NAME_ID;
+
 type TDigiCertOrgValidationResponse = {
   validations?: { type?: string; status?: string }[];
 };

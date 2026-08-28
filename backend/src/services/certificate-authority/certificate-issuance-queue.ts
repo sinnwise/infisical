@@ -881,6 +881,8 @@ export const certificateIssuanceQueueFactory = ({
           signatureAlgorithm,
           keyAlgorithm: keyAlgorithm as CertKeyAlgorithm,
           ttl,
+          keyUsages,
+          extendedKeyUsages,
           ...(csr && { csr }),
           ...(renewalOfOrderId !== undefined && { renewalOfOrderId })
         });

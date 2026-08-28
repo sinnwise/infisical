@@ -9,17 +9,19 @@ import {
 } from "@app/ee/services/permission/project-permission";
 import { TPkiAcmeAccountDALFactory } from "@app/ee/services/pki-acme/pki-acme-account-dal";
 import { BadRequestError, ForbiddenRequestError, NotFoundError } from "@app/lib/errors";
+import { isDigiCertX9Product } from "@app/services/app-connection/digicert/digicert-connection-fns";
 import { ActorAuthMethod, ActorType } from "@app/services/auth/auth-type";
 import { TCertificateBodyDALFactory } from "@app/services/certificate/certificate-body-dal";
 import { TCertificateDALFactory } from "@app/services/certificate/certificate-dal";
 import { TCertificateSecretDALFactory } from "@app/services/certificate/certificate-secret-dal";
 import { CertKeyAlgorithm, CertSignatureAlgorithm, CertStatus } from "@app/services/certificate/certificate-types";
-import { validateAcmIssuanceInputs } from "@app/services/certificate-authority/aws-acm-public-ca/aws-acm-public-ca-certificate-authority-fns";
+import { validateAcmIssuanceInputs } from "@app/services/certificate-authority/aws-acm-public-ca/aws-acm-public-ca-certificate-authority-validators";
 import { validateAwsPcaCaIssuanceInputs } from "@app/services/certificate-authority/aws-pca/aws-pca-certificate-authority-validators";
 import { TCertificateAuthorityDALFactory } from "@app/services/certificate-authority/certificate-authority-dal";
 import { CaType } from "@app/services/certificate-authority/certificate-authority-enums";
 import { assertCaInProfileProject } from "@app/services/certificate-authority/certificate-authority-fns";
 import { TCertificateIssuanceQueueFactory } from "@app/services/certificate-authority/certificate-issuance-queue";
+import { resolveDigiCertX9IssuanceOptions } from "@app/services/certificate-authority/digicert/digicert-certificate-authority-validators";
 import { validateGoDaddyIssuanceInputs } from "@app/services/certificate-authority/godaddy/godaddy-certificate-authority-validators";
 import { TInternalCertificateAuthorityServiceFactory } from "@app/services/certificate-authority/internal/internal-certificate-authority-service";
 import {
@@ -649,6 +651,7 @@ export const certificateApprovalServiceFactory = (
       caType !== CaType.ADCS &&
       caType !== CaType.AWS_PCA &&
       caType !== CaType.AWS_ACM_PUBLIC_CA &&
+      caType !== CaType.DIGICERT &&
       caType !== CaType.VENAFI_TPP &&
       caType !== CaType.GODADDY
     ) {
@@ -687,6 +690,26 @@ export const certificateApprovalServiceFactory = (
           : certRequest.keyAlgorithm || undefined,
         altNames: csrDerived?.subjectAlternativeNames ?? altNames ?? undefined,
         commonName: csrDerived?.commonName ?? certRequest.commonName ?? undefined
+      });
+    }
+
+    if (
+      caType === CaType.DIGICERT &&
+      isDigiCertX9Product(
+        ((targetCa.externalCa?.configuration ?? {}) as { productNameId?: string }).productNameId ?? ""
+      )
+    ) {
+      const csrRequest = certRequest.csr ? extractCertificateRequestFromCSR(certRequest.csr) : undefined;
+      const csrAlgorithms = certRequest.csr ? extractAlgorithmsFromCSR(certRequest.csr) : undefined;
+      resolveDigiCertX9IssuanceOptions({
+        commonName: csrRequest?.commonName ?? certRequest.commonName ?? "",
+        altNames:
+          csrRequest?.subjectAlternativeNames?.map(({ value }) => value) ?? altNames?.map(({ value }) => value) ?? [],
+        keyAlgorithm: csrAlgorithms?.keyAlgorithm ?? (certRequest.keyAlgorithm || profile.defaults?.keyAlgorithm),
+        signatureAlgorithm: certRequest.signatureAlgorithm || profile.defaults?.signatureAlgorithm,
+        keyUsages: csrRequest?.keyUsages ?? certRequest.keyUsages ?? profile.defaults?.keyUsages,
+        extendedKeyUsages:
+          csrRequest?.extendedKeyUsages ?? certRequest.extendedKeyUsages ?? profile.defaults?.extendedKeyUsages
       });
     }
 
@@ -730,12 +753,12 @@ export const certificateApprovalServiceFactory = (
       caId: profile.caId || "",
       caType,
       ttl: effectiveTtl,
-      signatureAlgorithm: certRequest.signatureAlgorithm || "",
-      keyAlgorithm: certRequest.keyAlgorithm || "",
+      signatureAlgorithm: certRequest.signatureAlgorithm || profile.defaults?.signatureAlgorithm || "",
+      keyAlgorithm: certRequest.keyAlgorithm || profile.defaults?.keyAlgorithm || "",
       commonName: certRequest.commonName || "",
       altNames: altNames?.map((san) => ({ type: san.type, value: san.value })) || [],
-      keyUsages: certRequest.keyUsages || [],
-      extendedKeyUsages: certRequest.extendedKeyUsages || [],
+      keyUsages: convertKeyUsageArrayToLegacy(mappedReconstructedRequest.keyUsages) || [],
+      extendedKeyUsages: convertExtendedKeyUsageArrayToLegacy(mappedReconstructedRequest.extendedKeyUsages) || [],
       certificateRequestId,
       csr: certRequest.csr || undefined,
       organization: certRequest.organization || undefined,
@@ -785,8 +808,7 @@ export const certificateApprovalServiceFactory = (
     applicationId?: string | null
   ): Promise<TCertificateIssuanceResponse> => {
     const effectiveSignatureAlgorithm = certificateRequestInput.signatureAlgorithm as
-      | CertSignatureAlgorithm
-      | undefined;
+      CertSignatureAlgorithm | undefined;
     const effectiveKeyAlgorithm = certificateRequestInput.keyAlgorithm as CertKeyAlgorithm | undefined;
 
     const result = await certificateDAL.transaction(async (tx) => {
@@ -907,8 +929,7 @@ export const certificateApprovalServiceFactory = (
     validateAlgorithmCompatibility(ca, certPolicy);
 
     const effectiveSignatureAlgorithm = certificateRequestInput.signatureAlgorithm as
-      | CertSignatureAlgorithm
-      | undefined;
+      CertSignatureAlgorithm | undefined;
     const effectiveKeyAlgorithm = certificateRequestInput.keyAlgorithm as CertKeyAlgorithm | undefined;
 
     const certificateSubject = buildCertificateSubjectFromTemplate(certificateRequestInput, certPolicy?.subject);

@@ -8,13 +8,14 @@ description: "Issue TLS or Code Signing certificates from DigiCert using the Cer
 Infisical can issue certificates directly from [DigiCert CertCentral](https://www.digicert.com/) using the [CertCentral Services API](https://dev.digicert.com/en/certcentral-apis/services-api.html). A single DigiCert CA in Infisical is configured for one purpose:
 
 - **SSL/TLS** — issues OV and EV TLS server certificates under an SSL product entitlement on your account (for example `ssl_plus`).
+- **X9 PKI for TLS** — issues DigiCert X9 PKI for TLS certificates under the `x9_pki` product entitlement. These certificates support public FQDN and IP address configurations, but not wildcard domains.
 - **Code Signing** — issues OV (`code_signing`) and EV (`code_signing_ev`) code-signing certificates against a CSR. The signing key must live on an HSM.
 
 ## Prerequisites
 
 - A [DigiCert App Connection](/integrations/app-connections/digicert) with a validated CertCentral API key.
 - A CertCentral **Organization**. For code signing, DigiCert validates the organization the first time it is used for a code-signing order, which can take up to 3 business days.
-- Entitlement to the product you intend to use (`ssl_plus`, `code_signing`, `code_signing_ev`, ...) on your CertCentral account.
+- Entitlement to the product you intend to use (`ssl_plus`, `x9_pki`, `code_signing`, `code_signing_ev`, ...) on your CertCentral account. Contact DigiCert to enable X9 PKI for TLS if it is not listed in your products.
 
 <Note>
   Configuring a DigiCert CA requires a CertCentral account with administrator-level access (or a role with permission to manage organizations, products, and API keys). The API key used for the App Connection inherits the permissions of the CertCentral user that created it.
@@ -33,8 +34,9 @@ Infisical can issue certificates directly from [DigiCert CertCentral](https://ww
 
         - **App Connection** — the DigiCert connection you created
         - **Organization** — the CertCentral organization that should appear on issued certificates
-        - **Purpose** — `SSL / TLS` or `Code Signing`. The product list filters accordingly.
+        - **Purpose** — `SSL / TLS`, `X9 PKI for TLS`, or `Code Signing`. The product list filters accordingly.
         - **Product** — the CertCentral entitlement this CA will issue under
+        - **Domain Validation Scope** (X9 PKI for TLS only) — choose whether DigiCert validates at the base-domain level, the exact FQDN level, or uses your CertCentral account default.
         - **Verified Contact** (Code Signing only) — full contact info for the person DigiCert emails to approve first-time code-signing orders for this organization. All five fields required: **First Name**, **Last Name**, **Email**, **Job Title**, **Telephone** (E.164, e.g. `+15551234567`). DigiCert requires `job_title` and `telephone` on every verified contact for CS orders; referencing an existing CertCentral user by id alone is not enough. Once the organization has an active CS validation on file, DigiCert ignores this field.
       </Step>
     </Steps>
@@ -80,8 +82,38 @@ Infisical can issue certificates directly from [DigiCert CertCentral](https://ww
         }
       }'
     ```
+
+    ```bash Create a DigiCert CA (X9 PKI for TLS)
+    curl --request POST \
+      --url https://app.infisical.com/api/v1/pki/ca/digicert \
+      --header 'Content-Type: application/json' \
+      --data '{
+        "name": "digicert-x9",
+        "status": "active",
+        "configuration": {
+          "appConnectionId": "<digicert-app-connection-id>",
+          "organizationId": 112236,
+          "productNameId": "x9_pki",
+          "purpose": "x9_pki",
+          "certificateDcvScope": "fqdn"
+        }
+      }'
+    ```
   </Tab>
 </Tabs>
+
+## X9 PKI for TLS requirements
+
+X9 PKI for TLS certificates support only fully qualified domain names and public IP addresses. They do not support wildcard domains such as `*.example.com`.
+
+For RSA certificates, choose SHA-256, SHA-384, or SHA-512. DigiCert selects SHA-256 for P-256 ECDSA certificates and SHA-384 for P-384 ECDSA certificates.
+
+For X9 PKI for TLS requests, Infisical accepts the following key usages and extended key usages:
+
+- Key usage: Digital Signature and Key Agreement / Encipherment
+- Extended key usage: Server Authentication and Client Authentication
+
+For an order that includes an IP address, Infisical selects DigiCert's HTTP Practical Demonstration validation method. DigiCert requires this method for IP address validation. Complete the validation steps in CertCentral before DigiCert issues the certificate.
 
 ## Using a DigiCert code signing CA
 
@@ -99,7 +131,7 @@ When you request a certificate through a DigiCert CertCentral CA, the request mo
 |-------|-------------|
 | **Pending Validation** | DigiCert has accepted the order. Complete domain control validation in DigiCert CertCentral. |
 | **Issued** | Infisical polls DigiCert and downloads the certificate once validation completes. Click **Trigger Validation** to force an immediate check. |
-| **Failed** | If DigiCert does not issue within 24 hours. Complete validation on CertCentral and submit a new request. |
+| **Failed** | If DigiCert does not issue within 24 hours. X9 PKI for TLS requests remain pending for up to 30 days to allow you to complete domain control validation. |
 
 <Note>
   OV and EV certificates require manual domain validation on the DigiCert CertCentral side before issuance.

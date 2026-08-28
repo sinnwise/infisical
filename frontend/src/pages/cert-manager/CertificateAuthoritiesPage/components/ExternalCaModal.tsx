@@ -45,6 +45,7 @@ import {
 } from "@app/hooks/api/ca";
 import {
   DigiCertCaPurpose,
+  DigiCertDcvScope,
   TCreateCertificateAuthorityDTO,
   TUpdateCertificateAuthorityDTO
 } from "@app/hooks/api/ca/types";
@@ -81,6 +82,7 @@ type ExternalCaConfigurationPayload =
       organizationId: number;
       productNameId: string;
       purpose: DigiCertCaPurpose;
+      certificateDcvScope?: DigiCertDcvScope;
       verifiedContact?: {
         firstName?: string;
         lastName?: string;
@@ -283,6 +285,7 @@ export const ExternalCaModal = ({ popUp, handlePopUpToggle }: Props) => {
             organizationId: 0,
             productNameId: "",
             purpose: DigiCertCaPurpose.Ssl,
+            certificateDcvScope: undefined,
             verifiedContact: undefined
           }
         };
@@ -573,6 +576,7 @@ export const ExternalCaModal = ({ popUp, handlePopUpToggle }: Props) => {
             organizationId: ca.configuration.organizationId,
             productNameId: ca.configuration.productNameId,
             purpose: ca.configuration.purpose ?? DigiCertCaPurpose.Ssl,
+            certificateDcvScope: ca.configuration.certificateDcvScope,
             verifiedContact: ca.configuration.verifiedContact
           }
         });
@@ -741,6 +745,9 @@ export const ExternalCaModal = ({ popUp, handlePopUpToggle }: Props) => {
         organizationId: formConfiguration.organizationId,
         productNameId: formConfiguration.productNameId,
         purpose: purposeForPayload,
+        ...(purposeForPayload === DigiCertCaPurpose.X9Pki && formConfiguration.certificateDcvScope
+          ? { certificateDcvScope: formConfiguration.certificateDcvScope }
+          : {}),
         ...(purposeForPayload === DigiCertCaPurpose.CodeSigning &&
         formConfiguration.csRequiresContact &&
         formConfiguration.verifiedContact

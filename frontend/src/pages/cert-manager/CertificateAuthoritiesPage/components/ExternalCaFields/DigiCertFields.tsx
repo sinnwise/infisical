@@ -14,7 +14,7 @@ import {
 } from "@app/components/v3";
 import { TAvailableAppConnection } from "@app/hooks/api/appConnections";
 import { TDigiCertOrganization, TDigiCertProduct } from "@app/hooks/api/appConnections/digicert";
-import { DigiCertCaPurpose } from "@app/hooks/api/ca/types";
+import { DigiCertCaPurpose, DigiCertDcvScope } from "@app/hooks/api/ca/types";
 
 import { AppConnectionSelectField } from "./AppConnectionSelectField";
 import { DigiCertProductType } from "./constants";
@@ -22,7 +22,16 @@ import { FormData } from "./schema";
 
 const PURPOSE_OPTIONS = [
   { value: DigiCertCaPurpose.Ssl, label: "SSL / TLS" },
+  { value: DigiCertCaPurpose.X9Pki, label: "X9 PKI for TLS" },
   { value: DigiCertCaPurpose.CodeSigning, label: "Code Signing" }
+];
+
+const DIGICERT_X9_PRODUCT_NAME_ID = "x9_pki";
+
+const DCV_SCOPE_OPTIONS: Array<{ value: DigiCertDcvScope | undefined; label: string }> = [
+  { value: undefined, label: "Account Default" },
+  { value: DigiCertDcvScope.BaseDomain, label: "Base Domain" },
+  { value: DigiCertDcvScope.Fqdn, label: "Exact FQDN" }
 ];
 
 type Props = {
@@ -110,8 +119,8 @@ export const DigiCertFields = ({
                 <Info />
               </TooltipTrigger>
               <TooltipContent className="max-w-sm">
-                What this CA issues. Selecting Code Signing filters the Product list to
-                DigiCert&apos;s code-signing products.
+                What this CA issues. Selecting a purpose filters the Product list to compatible
+                DigiCert products.
               </TooltipContent>
             </Tooltip>
           </FieldLabel>
@@ -126,6 +135,9 @@ export const DigiCertFields = ({
               if (next) {
                 onChange(next);
                 setValue("configuration.productNameId", "");
+                if (next !== DigiCertCaPurpose.X9Pki) {
+                  setValue("configuration.certificateDcvScope", undefined);
+                }
               }
             }}
             options={PURPOSE_OPTIONS}
@@ -148,6 +160,7 @@ export const DigiCertFields = ({
         const filteredProducts = digicertProducts.filter((p) => {
           if (purpose === DigiCertCaPurpose.CodeSigning)
             return p.type === DigiCertProductType.CodeSigning;
+          if (purpose === DigiCertCaPurpose.X9Pki) return p.nameId === DIGICERT_X9_PRODUCT_NAME_ID;
           return p.type === DigiCertProductType.Ssl || !p.type;
         });
         return (
@@ -182,6 +195,45 @@ export const DigiCertFields = ({
         );
       }}
     />
+    {(configuration && "purpose" in configuration
+      ? (configuration.purpose ?? DigiCertCaPurpose.Ssl)
+      : DigiCertCaPurpose.Ssl) === DigiCertCaPurpose.X9Pki && (
+      <Controller
+        control={control}
+        name="configuration.certificateDcvScope"
+        render={({ field: { value, onChange }, fieldState: { error } }) => (
+          <Field className="mb-4">
+            <FieldLabel>
+              Domain Validation Scope
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-sm">
+                  Select which names DigiCert validates, or use the CertCentral account default.
+                </TooltipContent>
+              </Tooltip>
+            </FieldLabel>
+            <FilterableSelect
+              value={
+                DCV_SCOPE_OPTIONS.find((option) => option.value === value) ?? DCV_SCOPE_OPTIONS[0]
+              }
+              onChange={(option) => {
+                onChange(
+                  (option as SingleValue<{ value: DigiCertDcvScope | undefined; label: string }>)
+                    ?.value
+                );
+              }}
+              options={DCV_SCOPE_OPTIONS}
+              getOptionLabel={(option) => option.label}
+              getOptionValue={(option) => option.value ?? ""}
+              isError={Boolean(error)}
+            />
+            <FieldError errors={[error]} />
+          </Field>
+        )}
+      />
+    )}
     {csRequiresContact && (
       <div className="mt-3 mb-2 rounded-md border border-border bg-mineshaft-800 p-4">
         <div className="mb-1 text-sm font-medium text-foreground">Verified Contact</div>

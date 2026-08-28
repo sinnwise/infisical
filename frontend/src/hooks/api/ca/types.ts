@@ -71,7 +71,13 @@ export type TAwsPcaCertificateAuthority = {
 
 export enum DigiCertCaPurpose {
   Ssl = "ssl",
+  X9Pki = "x9_pki",
   CodeSigning = "code_signing"
+}
+
+export enum DigiCertDcvScope {
+  BaseDomain = "base_domain",
+  Fqdn = "fqdn"
 }
 
 export type TDigiCertVerifiedContact = {
@@ -94,6 +100,7 @@ export type TDigiCertCertificateAuthority = {
     organizationId: number;
     productNameId: string;
     purpose?: DigiCertCaPurpose;
+    certificateDcvScope?: DigiCertDcvScope;
     verifiedContact?: TDigiCertVerifiedContact;
   };
 };

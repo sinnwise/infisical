@@ -9,7 +9,13 @@ import {
 
 export enum DigiCertCaPurpose {
   Ssl = "ssl",
+  X9Pki = "x9_pki",
   CodeSigning = "code_signing"
+}
+
+export enum DigiCertDcvScope {
+  BaseDomain = "base_domain",
+  Fqdn = "fqdn"
 }
 
 export const DigiCertCertificateAuthorityConfigurationSchema = z.object({
@@ -29,7 +35,11 @@ export const DigiCertCertificateAuthorityConfigurationSchema = z.object({
   purpose: z
     .nativeEnum(DigiCertCaPurpose)
     .optional()
-    .describe("Whether this CA issues SSL/TLS or code-signing certificates (defaults to ssl)"),
+    .describe("Whether this CA issues SSL/TLS, X9 PKI for TLS, or code-signing certificates (defaults to ssl)"),
+  certificateDcvScope: z
+    .nativeEnum(DigiCertDcvScope)
+    .optional()
+    .describe("X9 PKI for TLS domain validation scope. When omitted, CertCentral uses the account setting."),
   verifiedContact: z
     .object({
       firstName: z.string().trim().min(1).max(128),

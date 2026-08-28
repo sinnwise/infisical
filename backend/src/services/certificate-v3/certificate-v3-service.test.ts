@@ -1075,6 +1075,95 @@ describe("CertificateV3Service", () => {
       ).rejects.toThrow("Profile is not configured for api enrollment");
     });
 
+    it("rejects invalid X9 orders before queueing", async () => {
+      const profileId = "profile-x9";
+      vi.mocked(mockCertificateProfileDAL.findByIdWithConfigs).mockResolvedValue({
+        id: profileId,
+        projectId: "project-123",
+        enrollmentType: EnrollmentType.API,
+        issuerType: IssuerType.CA,
+        caId: "ca-x9",
+        certificatePolicyId: "policy-123",
+        slug: "x9-profile",
+        apiConfigId: "api-config-x9"
+      } as any);
+      vi.mocked(mockCertificateAuthorityDAL.findByIdWithAssociatedCa).mockResolvedValue({
+        id: "ca-x9",
+        projectId: "project-123",
+        externalCa: {
+          id: "external-ca-x9",
+          type: CaType.DIGICERT,
+          configuration: { productNameId: "x9_pki" }
+        }
+      } as any);
+      vi.mocked(mockCertificatePolicyService.validateCertificateRequest).mockResolvedValue({
+        isValid: true,
+        errors: []
+      } as any);
+
+      await expect(
+        service.orderCertificate({
+          profileId,
+          certificateOrder: { ...mockCertificateOrder, commonName: "*.example.com" },
+          ...mockActor
+        })
+      ).rejects.toThrow("does not support wildcard domain '*.example.com'");
+
+      expect(mockCertificateIssuanceQueue.queueCertificateIssuance).not.toHaveBeenCalled();
+    });
+
+    it("uses profile defaults for X9 orders that omit algorithms and usages", async () => {
+      const profileId = "profile-x9-defaults";
+      vi.mocked(mockCertificateProfileDAL.findByIdWithConfigs).mockResolvedValue({
+        id: profileId,
+        projectId: "project-123",
+        enrollmentType: EnrollmentType.API,
+        issuerType: IssuerType.CA,
+        caId: "ca-x9",
+        certificatePolicyId: "policy-123",
+        slug: "x9-defaults-profile",
+        apiConfigId: "api-config-x9",
+        defaults: {
+          keyAlgorithm: "RSA_4096",
+          signatureAlgorithm: "RSA-SHA512",
+          keyUsages: [CertKeyUsageType.DIGITAL_SIGNATURE],
+          extendedKeyUsages: [CertExtendedKeyUsageType.SERVER_AUTH]
+        }
+      } as any);
+      vi.mocked(mockCertificateAuthorityDAL.findByIdWithAssociatedCa).mockResolvedValue({
+        id: "ca-x9",
+        projectId: "project-123",
+        externalCa: {
+          id: "external-ca-x9",
+          type: CaType.DIGICERT,
+          configuration: { productNameId: "x9_pki" }
+        }
+      } as any);
+      vi.mocked(mockCertificatePolicyService.validateCertificateRequest).mockResolvedValue({
+        isValid: true,
+        errors: []
+      } as any);
+
+      await service.orderCertificate({
+        profileId,
+        certificateOrder: {
+          commonName: "api.example.com",
+          altNames: [],
+          validity: { ttl: "30d" }
+        },
+        ...mockActor
+      });
+
+      expect(mockCertificateIssuanceQueue.queueCertificateIssuance).toHaveBeenCalledWith(
+        expect.objectContaining({
+          keyAlgorithm: "RSA_4096",
+          signatureAlgorithm: "RSA-SHA512",
+          keyUsages: ["digitalSignature"],
+          extendedKeyUsages: ["serverAuth"]
+        })
+      );
+    });
+
     describe("CA certificate orders", () => {
       const profileId = "profile-ca-order";
       const caOrder = {

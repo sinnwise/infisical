@@ -4,14 +4,17 @@ import { BadRequestError, NotFoundError } from "@app/lib/errors";
 import { TAppConnectionDALFactory } from "@app/services/app-connection/app-connection-dal";
 import { AppConnection } from "@app/services/app-connection/app-connection-enums";
 import { decryptAppConnectionCredentials } from "@app/services/app-connection/app-connection-fns";
-import { getDigiCertApiBaseUrl } from "@app/services/app-connection/digicert/digicert-connection-fns";
+import {
+  getDigiCertApiBaseUrl,
+  isDigiCertX9Product
+} from "@app/services/app-connection/digicert/digicert-connection-fns";
 import { TDigiCertConnection } from "@app/services/app-connection/digicert/digicert-connection-types";
 import { splitPemChain } from "@app/services/certificate/certificate-fns";
 import { TKmsServiceFactory } from "@app/services/kms/kms-service";
 
 import { TCertificateAuthorityDALFactory } from "../certificate-authority-dal";
 import { CaStatus, CaType } from "../certificate-authority-enums";
-import { DigiCertCaPurpose } from "./digicert-certificate-authority-schemas";
+import { DigiCertCaPurpose, DigiCertDcvScope } from "./digicert-certificate-authority-schemas";
 import { TDigiCertCertificateAuthority } from "./digicert-certificate-authority-types";
 
 export const castDbEntryToDigiCertCertificateAuthority = (
@@ -31,6 +34,7 @@ export const castDbEntryToDigiCertCertificateAuthority = (
     organizationId?: number;
     productNameId?: string;
     purpose?: DigiCertCaPurpose;
+    certificateDcvScope?: DigiCertDcvScope;
     verifiedContact?: {
       firstName: string;
       lastName: string;
@@ -46,7 +50,10 @@ export const castDbEntryToDigiCertCertificateAuthority = (
     });
   }
 
-  const purpose = config.purpose ?? DigiCertCaPurpose.Ssl;
+  // Older CAs could select x9_pki before it had a distinct purpose.
+  const purpose = isDigiCertX9Product(config.productNameId)
+    ? DigiCertCaPurpose.X9Pki
+    : (config.purpose ?? DigiCertCaPurpose.Ssl);
 
   return {
     id: ca.id,
@@ -60,6 +67,7 @@ export const castDbEntryToDigiCertCertificateAuthority = (
       organizationId: config.organizationId,
       productNameId: config.productNameId,
       purpose,
+      certificateDcvScope: config.certificateDcvScope,
       verifiedContact: config.verifiedContact
     },
     status: ca.status as CaStatus
