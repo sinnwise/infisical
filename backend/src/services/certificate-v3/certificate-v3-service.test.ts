@@ -1029,6 +1029,23 @@ describe("CertificateV3Service", () => {
   });
 
   describe("orderCertificate", () => {
+    // Subject CN only.example.com, no subjectAltName extension.
+    const SAN_LESS_CSR = `-----BEGIN CERTIFICATE REQUEST-----
+MIICYDCCAUgCAQAwGzEZMBcGA1UEAwwQb25seS5leGFtcGxlLmNvbTCCASIwDQYJ
+KoZIhvcNAQEBBQADggEPADCCAQoCggEBANXOjXdpeNuGT/92BqtJ0dttFrF6hzYh
+HDcMAsSO7lJt0CHBxIHD7VI8rIrI0SSzGwvt/9h6G4J7aTT8XvOVyj/e9yLO2keG
+1O++LJa1qnZlkHAlSvQgNWU1t0ZaPn7o1qxaWPnPWfM2BkS41m9sJmbWDVr3kt/I
+9wcTjg4VCaRoDhSCSOWS3f1omWrHKUwxzvRuVgvaRMKED5IIUguW7qjmBbP15+zj
+nYNVV9pG0uOwD1pYtSJ6qg7/75JDWHhiiKFgzas5Vljv1xvw5kDTqWBeJwWEEFmJ
+oO6fVIBQzpabxs+AzIY1G4LwTfMgUgLUVClZP5cxYjTXe33AzFqw5A0CAwEAAaAA
+MA0GCSqGSIb3DQEBCwUAA4IBAQA3Y/hK5xq0qp7D+QK2IBmHzRrwf3/Vcn5dFAn/
+mqftdLXFVi71XejEueKy3+kwv6cWTRT5+/okYAY1ktrFlCzy2qGjGCEURDKo2/xx
+n7DobFkMJOL3qZ6ctIk80ziIYjWeVd/Q9MBOhCHfK/2MD8/EFJhUaetBvmUZtY6q
+IZTBXoyLMGHGnvHgYgDhERGZ35Ceu9iqa48N+oUWPYdDCdKPn+ac88funeev0eeF
+p+sM1HK6NpP71LI13gie2NZhkqVBHkTpNV9LGB/p8vC3EhCR9RvKMWqFiHXAwekQ
+beojaxiivUv31AOWONQGT6UNADIYR/+T6YXY5x+YaRh9Frgl
+-----END CERTIFICATE REQUEST-----`;
+
     const mockCertificateOrder = {
       altNames: [{ type: CertSubjectAlternativeNameType.DNS_NAME, value: "example.com" }],
       validity: { ttl: "30d" },
@@ -1110,6 +1127,57 @@ describe("CertificateV3Service", () => {
       ).rejects.toThrow("does not support wildcard domain '*.example.com'");
 
       expect(mockCertificateIssuanceQueue.queueCertificateIssuance).not.toHaveBeenCalled();
+    });
+
+    // X9 is the only product ordered from the CSR, so a CSR must not redirect any other provider's
+    // order onto identities the caller never declared.
+    it("keeps a non-X9 order on the caller's declared identities when a CSR is supplied", async () => {
+      const profileId = "profile-ov";
+      vi.mocked(mockCertificateProfileDAL.findByIdWithConfigs).mockResolvedValue({
+        id: profileId,
+        projectId: "project-123",
+        enrollmentType: EnrollmentType.API,
+        issuerType: IssuerType.CA,
+        caId: "ca-ov",
+        certificatePolicyId: "policy-123",
+        slug: "ov-profile",
+        apiConfigId: "api-config-ov"
+      } as any);
+      vi.mocked(mockCertificateAuthorityDAL.findByIdWithAssociatedCa).mockResolvedValue({
+        id: "ca-ov",
+        projectId: "project-123",
+        status: CaStatus.ACTIVE,
+        externalCa: {
+          id: "external-ca-ov",
+          type: CaType.DIGICERT,
+          configuration: { productNameId: "ssl_plus" }
+        }
+      } as any);
+      vi.mocked(mockCertificatePolicyService.validateCertificateRequest).mockResolvedValue({
+        isValid: true,
+        errors: []
+      } as any);
+      vi.mocked(mockApprovalPolicyDAL.findByProjectId).mockResolvedValue([]);
+
+      // The CSR's subject is shop.example.com and it carries no SANs.
+      await service.orderCertificate({
+        profileId,
+        certificateOrder: { ...mockCertificateOrder, csr: SAN_LESS_CSR },
+        ...mockActor
+      });
+
+      expect(mockCertificateRequestService.createCertificateRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          commonName: "example.com",
+          altNames: mockCertificateOrder.altNames,
+          keyAlgorithm: "RSA_2048",
+          signatureAlgorithm: "RSA-SHA256"
+        })
+      );
+      // No SAN back-fill for non-X9: the CSR has none, so none are queued.
+      expect(mockCertificateIssuanceQueue.queueCertificateIssuance).toHaveBeenCalledWith(
+        expect.objectContaining({ altNames: [], signatureAlgorithm: "RSA-SHA256" })
+      );
     });
 
     it("uses profile defaults for X9 orders that omit algorithms and usages", async () => {

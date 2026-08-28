@@ -33,7 +33,7 @@ import { TCertificateBodyDALFactory } from "@app/services/certificate/certificat
 import { TCertificateDALFactory } from "@app/services/certificate/certificate-dal";
 import { TCertificateSecretDALFactory } from "@app/services/certificate/certificate-secret-dal";
 import { CertKeyAlgorithm, CertSignatureAlgorithm } from "@app/services/certificate/certificate-types";
-import { validateAcmIssuanceInputs } from "@app/services/certificate-authority/aws-acm-public-ca/aws-acm-public-ca-certificate-authority-validators";
+import { validateAcmIssuanceInputs } from "@app/services/certificate-authority/aws-acm-public-ca/aws-acm-public-ca-certificate-authority-fns";
 import { validateAwsPcaCaIssuanceInputs } from "@app/services/certificate-authority/aws-pca/aws-pca-certificate-authority-validators";
 import { TCertificateAuthorityDALFactory } from "@app/services/certificate-authority/certificate-authority-dal";
 import { CaType } from "@app/services/certificate-authority/certificate-authority-enums";
@@ -742,7 +742,8 @@ export const certificateV3ServiceFactory = ({
     }
 
     const effectiveSignatureAlgorithm = certificateRequestWithDefaults.signatureAlgorithm as
-      CertSignatureAlgorithm | undefined;
+      | CertSignatureAlgorithm
+      | undefined;
     const effectiveKeyAlgorithm = certificateRequestWithDefaults.keyAlgorithm as CertKeyAlgorithm | undefined;
 
     if (policy.algorithms?.keyAlgorithm && !effectiveKeyAlgorithm) {
@@ -1666,9 +1667,6 @@ export const certificateV3ServiceFactory = ({
     if (certificateOrder.csr) {
       csrCertificateRequest = extractCertificateRequestFromCSR(certificateOrder.csr);
       certificateRequest = applyProfileDefaults(csrCertificateRequest, profile.defaults);
-      if (!csrCertificateRequest.subjectAlternativeNames?.length && certificateOrder.altNames.length > 0) {
-        certificateRequest.subjectAlternativeNames = certificateOrder.altNames;
-      }
       const algorithms = extractAlgorithmsFromCSR(certificateOrder.csr);
       extractedKeyAlgorithm = algorithms.keyAlgorithm;
       extractedSignatureAlgorithm = algorithms.signatureAlgorithm;
@@ -1686,10 +1684,8 @@ export const certificateV3ServiceFactory = ({
         validity: certificateOrder.validity,
         notBefore: certificateOrder.notBefore,
         notAfter: certificateOrder.notAfter,
-        ...("signatureAlgorithm" in certificateOrder
-          ? { signatureAlgorithm: certificateOrder.signatureAlgorithm }
-          : {}),
-        ...("keyAlgorithm" in certificateOrder ? { keyAlgorithm: certificateOrder.keyAlgorithm } : {}),
+        signatureAlgorithm: certificateOrder.signatureAlgorithm,
+        keyAlgorithm: certificateOrder.keyAlgorithm,
         basicConstraints: certificateOrder.basicConstraints,
         organization: certificateOrder.organization,
         organizationalUnit: certificateOrder.organizationalUnit,
@@ -1729,8 +1725,27 @@ export const certificateV3ServiceFactory = ({
       mappedCertificateRequest.signatureAlgorithm = extractedSignatureAlgorithm;
     }
 
-    const effectiveKeyAlgorithm = extractedKeyAlgorithm ?? certificateRequest.keyAlgorithm;
-    const effectiveSignatureAlgorithm = certificateRequest.signatureAlgorithm;
+    const isDigiCertX9Order =
+      preflightCa?.externalCa?.type === CaType.DIGICERT &&
+      isDigiCertX9Product(
+        ((preflightCa.externalCa.configuration ?? {}) as { productNameId?: string }).productNameId ?? ""
+      );
+
+    // X9 is ordered from the CSR, so the CSR's own SANs are what DigiCert signs, and a profile's
+    // default algorithms have to reach the signature hash. Both are scoped to X9 because every
+    // other provider issues from the attributes the caller declared.
+    if (isDigiCertX9Order && csrCertificateRequest && !csrCertificateRequest.subjectAlternativeNames?.length) {
+      certificateRequest.subjectAlternativeNames = certificateOrder.altNames;
+    }
+
+    // applyProfileDefaults treats an API route's present-but-undefined key as explicitly cleared, so
+    // the profile default is read directly rather than changing that shared behaviour.
+    const queuedKeyAlgorithm = isDigiCertX9Order
+      ? (extractedKeyAlgorithm ?? certificateRequest.keyAlgorithm ?? profile.defaults?.keyAlgorithm)
+      : certificateRequest.keyAlgorithm;
+    const queuedSignatureAlgorithm = isDigiCertX9Order
+      ? (certificateRequest.signatureAlgorithm ?? profile.defaults?.signatureAlgorithm)
+      : certificateOrder.signatureAlgorithm;
 
     const validationResult = await certificatePolicyService.validateCertificateRequest(
       profile.certificatePolicyId,
@@ -1766,20 +1781,12 @@ export const certificateV3ServiceFactory = ({
       validateAwsPcaCaIssuanceInputs({ basicConstraints: certificateRequest.basicConstraints });
     }
 
-    if (
-      preflightCa?.externalCa?.type === CaType.DIGICERT &&
-      isDigiCertX9Product(
-        ((preflightCa.externalCa.configuration ?? {}) as { productNameId?: string }).productNameId ?? ""
-      )
-    ) {
+    if (isDigiCertX9Order) {
       resolveDigiCertX9IssuanceOptions({
         commonName: csrCertificateRequest?.commonName ?? certificateRequest.commonName ?? "",
-        altNames:
-          csrCertificateRequest?.subjectAlternativeNames?.map(({ value }) => value) ??
-          certificateRequest.subjectAlternativeNames?.map(({ value }) => value) ??
-          [],
-        keyAlgorithm: extractedKeyAlgorithm ?? certificateRequest.keyAlgorithm,
-        signatureAlgorithm: effectiveSignatureAlgorithm,
+        altNames: certificateRequest.subjectAlternativeNames?.map(({ value }) => value) ?? [],
+        keyAlgorithm: queuedKeyAlgorithm,
+        signatureAlgorithm: queuedSignatureAlgorithm,
         keyUsages: csrCertificateRequest?.keyUsages ?? certificateRequest.keyUsages,
         extendedKeyUsages: csrCertificateRequest?.extendedKeyUsages ?? certificateRequest.extendedKeyUsages
       });
@@ -1812,16 +1819,14 @@ export const certificateV3ServiceFactory = ({
             profileId: profile.id,
             applicationId: applicationId ?? null,
             csr: certificateOrder.csr || null,
-            commonName: certificateRequest.commonName || null,
-            altNames: certificateRequest.subjectAlternativeNames
-              ? JSON.stringify(certificateRequest.subjectAlternativeNames)
-              : null,
-            keyUsages: convertKeyUsageArrayToLegacy(certificateRequest.keyUsages) || null,
-            extendedKeyUsages: convertExtendedKeyUsageArrayToLegacy(certificateRequest.extendedKeyUsages) || null,
+            commonName: certificateOrder.commonName || null,
+            altNames: certificateOrder.altNames ? JSON.stringify(certificateOrder.altNames) : null,
+            keyUsages: convertKeyUsageArrayToLegacy(certificateOrder.keyUsages) || null,
+            extendedKeyUsages: convertExtendedKeyUsageArrayToLegacy(certificateOrder.extendedKeyUsages) || null,
             notBefore: certificateOrder.notBefore || null,
             notAfter: certificateOrder.notAfter || null,
-            keyAlgorithm: effectiveKeyAlgorithm || null,
-            signatureAlgorithm: effectiveSignatureAlgorithm || null,
+            keyAlgorithm: certificateOrder.keyAlgorithm || null,
+            signatureAlgorithm: certificateOrder.signatureAlgorithm || null,
             ttl: certificateOrder.validity?.ttl || null,
             metadata: certificateOrder.template ? JSON.stringify({ template: certificateOrder.template }) : null,
             organization: certificateRequest.organization || null,
@@ -1857,21 +1862,21 @@ export const certificateV3ServiceFactory = ({
           profileId,
           profileName: profile.slug,
           certificateRequest: {
-            commonName: certificateRequest.commonName,
+            commonName: certificateOrder.commonName,
             organization: certificateRequest.organization,
             organizationalUnit: certificateRequest.organizationalUnit,
             country: certificateRequest.country,
             state: certificateRequest.state,
             locality: certificateRequest.locality,
             domainComponents: certificateRequest.domainComponents,
-            keyUsages: certificateRequest.keyUsages,
-            extendedKeyUsages: certificateRequest.extendedKeyUsages,
-            altNames: certificateRequest.subjectAlternativeNames,
+            keyUsages: certificateOrder.keyUsages as string[] | undefined,
+            extendedKeyUsages: certificateOrder.extendedKeyUsages as string[] | undefined,
+            altNames: certificateOrder.altNames,
             validity: certificateOrder.validity,
             notBefore: certificateOrder.notBefore?.toISOString(),
             notAfter: certificateOrder.notAfter?.toISOString(),
-            signatureAlgorithm: effectiveSignatureAlgorithm,
-            keyAlgorithm: effectiveKeyAlgorithm,
+            signatureAlgorithm: certificateOrder.signatureAlgorithm,
+            keyAlgorithm: certificateOrder.keyAlgorithm,
             basicConstraints: certificateRequest.basicConstraints
           },
           certificateRequestId: certRequest.id
@@ -1920,7 +1925,7 @@ export const certificateV3ServiceFactory = ({
         message: "Certificate order request requires approval",
         projectId: profile.projectId,
         profileName: profile.slug,
-        commonName: certificateRequest.commonName
+        commonName: certificateOrder.commonName
       };
     }
 
@@ -1999,12 +2004,12 @@ export const certificateV3ServiceFactory = ({
         caId: ca.id,
         profileId: profile.id,
         applicationId,
-        commonName: certificateRequest.commonName || "",
-        keyUsages: convertKeyUsageArrayToLegacy(certificateRequest.keyUsages) || [],
-        extendedKeyUsages: convertExtendedKeyUsageArrayToLegacy(certificateRequest.extendedKeyUsages) || [],
-        keyAlgorithm: effectiveKeyAlgorithm || "",
-        signatureAlgorithm: effectiveSignatureAlgorithm || "",
-        altNames: certificateRequest.subjectAlternativeNames,
+        commonName: certificateOrder.commonName || "",
+        keyUsages: convertKeyUsageArrayToLegacy(certificateOrder.keyUsages) || [],
+        extendedKeyUsages: convertExtendedKeyUsageArrayToLegacy(certificateOrder.extendedKeyUsages) || [],
+        keyAlgorithm: certificateOrder.keyAlgorithm || "",
+        signatureAlgorithm: certificateOrder.signatureAlgorithm || "",
+        altNames: certificateOrder.altNames,
         notBefore: certificateOrder.notBefore,
         notAfter: certificateOrder.notAfter,
         status: CertificateRequestStatus.PENDING,
@@ -2034,8 +2039,8 @@ export const certificateV3ServiceFactory = ({
         caId: profile.caId || "",
         caType,
         ttl: certificateOrder.validity?.ttl || "1y",
-        signatureAlgorithm: effectiveSignatureAlgorithm || "",
-        keyAlgorithm: effectiveKeyAlgorithm || "",
+        signatureAlgorithm: queuedSignatureAlgorithm || "",
+        keyAlgorithm: queuedKeyAlgorithm || "",
         commonName: certificateRequest.commonName || "",
         altNames:
           certificateRequest.subjectAlternativeNames?.map((san) => ({ type: san.type, value: san.value })) || [],
